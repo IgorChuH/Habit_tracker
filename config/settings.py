@@ -124,7 +124,7 @@ REST_FRAMEWORK = {
 CORS_ALLOWED_ORIGINS = [
     origin for origin in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",") if origin
 ]
-# Или, для разработки, можно разрешить все:
+
 # CORS_ALLOW_ALL_ORIGINS = DEBUG
 
 # Настройки Celery
@@ -135,9 +135,9 @@ CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_TIME_LIMIT = 30 * 60
 
 # Дополнительные настройки для Windows
-CELERY_WORKER_POOL = "solo"  # Используем solo пул на Windows
-CELERY_WORKER_CONCURRENCY = 1  # Только один процесс
-CELERY_TASK_ALWAYS_EAGER = False  # Не выполнять задачи синхронно
+CELERY_WORKER_POOL = "solo"
+CELERY_WORKER_CONCURRENCY = 1
+CELERY_TASK_ALWAYS_EAGER = False
 CELERY_TASK_EAGER_PROPAGATES = False
 
 # Токен Telegram
