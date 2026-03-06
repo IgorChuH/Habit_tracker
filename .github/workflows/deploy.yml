@@ -89,7 +89,6 @@ jobs:
 
   deploy:
     needs: [test, build]
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
 
     steps:
