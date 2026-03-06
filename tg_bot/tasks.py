@@ -14,11 +14,7 @@ def send_telegram_message(chat_id, text):
     """Вспомогательная функция для отправки сообщения в Telegram."""
     token = settings.TELEGRAM_TOKEN
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    data = {
-        'chat_id': chat_id,
-        'text': text,
-        'parse_mode': 'HTML'
-    }
+    data = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
     try:
         response = requests.post(url, data=data, timeout=10)
         response.raise_for_status()
@@ -36,22 +32,20 @@ def send_habit_reminders():
 
     # Получаем все привычки, время которых соответствует текущему часу
     # Например, если сейчас 15:30, найдем привычки с временем с 15:00 до 15:59
-    start_time = (now - timedelta(
-        minutes=now.minute,
-        seconds=now.second,
-        microsecond=now.microsecond
-    )).time()
+    start_time = (
+        now
+        - timedelta(minutes=now.minute, seconds=now.second, microsecond=now.microsecond)
+    ).time()
 
-    end_time = (now + timedelta(hours=1) - timedelta(
-        minutes=now.minute,
-        seconds=now.second,
-        microsecond=now.microsecond
-    )).time()
+    end_time = (
+        now
+        + timedelta(hours=1)
+        - timedelta(minutes=now.minute, seconds=now.second, microsecond=now.microsecond)
+    ).time()
 
     habits_to_notify = Habit.objects.filter(
-        time__gte=start_time,
-        time__lt=end_time
-    ).select_related('user__telegram_profile')
+        time__gte=start_time, time__lt=end_time
+    ).select_related("user__telegram_profile")
 
     for habit in habits_to_notify:
         # Проверяем, есть ли у пользователя Telegram профиль с chat_id
