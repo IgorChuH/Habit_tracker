@@ -2,9 +2,9 @@ name: CI/CD Pipeline
 
 on:
   push:
-    branches: [ "main", "develop", "future" ]  # Все ваши ветки
+    branches: [ main, develop, future, feature ]
   pull_request:
-    branches: [ "main", "develop" ]
+    branches: [ main, develop ]
   workflow_dispatch:
 
 jobs:
@@ -37,73 +37,134 @@ jobs:
           --health-retries 5
 
     steps:
-    - uses: actions/checkout@v3
+      - uses: actions/checkout@v3
 
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.13'
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.13'
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-    - name: Create .env file
-      run: |
-        echo "SECRET_KEY=test-key" > .env
-        echo "DEBUG=False" >> .env
-        echo "POSTGRES_DB=test_db" >> .env
-        echo "POSTGRES_USER=test_user" >> .env
-        echo "POSTGRES_PASSWORD=test_password" >> .env
-        echo "POSTGRES_HOST=localhost" >> .env
-        echo "REDIS_HOST=localhost" >> .env
-        echo "TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}" >> .env
+      - name: Create .env file
+        run: |
+          echo "SECRET_KEY=test-key" > .env
+          echo "DEBUG=False" >> .env
+          echo "POSTGRES_DB=test_db" >> .env
+          echo "POSTGRES_USER=test_user" >> .env
+          echo "POSTGRES_PASSWORD=test_password" >> .env
+          echo "POSTGRES_HOST=localhost" >> .env
+          echo "REDIS_HOST=localhost" >> .env
+          echo "TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}" >> .env
 
-    - name: Run migrations
-      run: python manage.py migrate
+      - name: Run migrations
+        run: python manage.py migrate
 
-    - name: Run tests
-      run: python manage.py test
+      - name: Run tests
+        run: python manage.py test
 
-    - name: Run flake8
-      run: flake8 . --exclude=migrations,venv --max-line-length=120
+      - name: Run flake8
+        run: flake8 . --exclude=migrations,venv --max-line-length=120
 
   build:
     needs: test
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
+      - uses: actions/checkout@v3
 
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v2
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
 
-    - name: Build Docker image
-      uses: docker/build-push-action@v4
-      with:
-        context: .
-        push: false
-        tags: habit-tracker:latest
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
+      - name: Build Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          push: false
+          tags: habit-tracker:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
   deploy:
-    needs: build
-    if: github.ref == 'refs/heads/main'
+    needs: [test, build]
     runs-on: ubuntu-latest
 
     steps:
     - uses: actions/checkout@v3
 
-    - name: Copy files to server
-      uses: appleboy/scp-action@v0.1.4
+    - name: Prepare server directory
+      uses: appleboy/ssh-action@v0.1.7
       with:
         host: ${{ secrets.SERVER_HOST }}
         username: ${{ secrets.SERVER_USER }}
         key: ${{ secrets.SSH_PRIVATE_KEY }}
-        port: ${{ secrets.SSH_PORT }}
-        source: ".,!venv,!__pycache__,!*.pyc"
-        target: /app/habit-tracker
+        port: ${{ secrets.SSH_PORT || '22' }}
+        script: |
+          # Создаем директорию
+          mkdir -p ~/habit-tracker
+          
+          # Сохраняем .env если есть
+          if [ -f ~/habit-tracker/.env ]; then
+            cp ~/habit-tracker/.env ~/.env.backup
+          fi
+          
+          # Очищаем директорию
+          rm -rf ~/habit-tracker/*
+          
+          echo "Directory ready: ~/habit-tracker"
+
+    - name: Copy files with rsync
+      run: |
+        # Создаем файл с SSH ключом
+        echo "${{ secrets.SSH_PRIVATE_KEY }}" > private_key.pem
+        chmod 600 private_key.pem
+        
+        # Копируем файлы через rsync
+        rsync -avz --delete \
+          -e "ssh -o StrictHostKeyChecking=no -i private_key.pem -p ${{ secrets.SSH_PORT || '22' }}" \
+          --exclude='.git' \
+          --exclude='.gitignore' \
+          --exclude='.env' \
+          --exclude='.env.example' \
+          --exclude='__pycache__' \
+          --exclude='*.pyc' \
+          --exclude='venv' \
+          --exclude='.idea' \
+          --exclude='.vscode' \
+          --exclude='*.log' \
+          --exclude='.DS_Store' \
+          ./ ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:~/habit-tracker/
+      shell: bash
+
+    - name: Restore .env file
+      uses: appleboy/ssh-action@v0.1.7
+      with:
+        host: ${{ secrets.SERVER_HOST }}
+        username: ${{ secrets.SERVER_USER }}
+        key: ${{ secrets.SSH_PRIVATE_KEY }}
+        port: ${{ secrets.SSH_PORT || '22' }}
+        script: |
+          # Восстанавливаем .env если был бэкап
+          if [ -f ~/.env.backup ]; then
+            cp ~/.env.backup ~/habit-tracker/.env
+            rm ~/.env.backup
+            echo "Restored .env from backup"
+          elif [ ! -f ~/habit-tracker/.env ] && [ -f ~/habit-tracker/.env.example ]; then
+            cp ~/habit-tracker/.env.example ~/habit-tracker/.env
+            echo "Created .env from .env.example"
+            echo "⚠️ Please update .env with actual values: nano ~/habit-tracker/.env"
+          fi
+          
+          # Проверяем наличие необходимых переменных в .env
+          cd ~/habit-tracker
+          if [ -f .env ]; then
+            source .env
+            if [ -z "$SECRET_KEY" ] || [ "$SECRET_KEY" = "your-secret-key-here" ]; then
+              echo "⚠️ Warning: SECRET_KEY not properly set in .env"
+            fi
+          fi
 
     - name: Deploy with Docker Compose
       uses: appleboy/ssh-action@v0.1.7
@@ -111,25 +172,43 @@ jobs:
         host: ${{ secrets.SERVER_HOST }}
         username: ${{ secrets.SERVER_USER }}
         key: ${{ secrets.SSH_PRIVATE_KEY }}
-        port: ${{ secrets.SSH_PORT }}
+        port: ${{ secrets.SSH_PORT || '22' }}
         script: |
-          cd /app/habit-tracker
+          cd ~/habit-tracker
           
-          # Создаем .env файл
-          echo "SECRET_KEY=${{ secrets.DJANGO_SECRET_KEY }}" > .env
-          echo "DEBUG=False" >> .env
-          echo "ALLOWED_HOSTS=${{ secrets.SERVER_HOST }}" >> .env
-          echo "POSTGRES_DB=${{ secrets.POSTGRES_DB }}" >> .env
-          echo "POSTGRES_USER=${{ secrets.POSTGRES_USER }}" >> .env
-          echo "POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}" >> .env
-          echo "POSTGRES_HOST=db" >> .env
-          echo "POSTGRES_PORT=5432" >> .env
-          echo "REDIS_HOST=redis" >> .env
-          echo "REDIS_PORT=6379" >> .env
-          echo "TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}" >> .env
+          # Проверяем наличие .env
+          if [ ! -f .env ]; then
+            echo "❌ .env file not found!"
+            exit 1
+          fi
           
-          docker-compose down
+          # Проверяем наличие Docker и Docker Compose
+          if ! command -v docker &> /dev/null; then
+            echo "❌ Docker not found!"
+            exit 1
+          fi
           
+          if ! command -v docker-compose &> /dev/null; then
+            echo "❌ Docker Compose not found!"
+            exit 1
+          fi
+          
+          # Останавливаем старые контейнеры
+          docker-compose down || true
+          
+          # Собираем и запускаем
           docker-compose up -d --build
           
-          docker system prune -f
+          # Проверяем статус
+          echo "=== Container Status ==="
+          docker-compose ps
+          
+          # Ждем немного и проверяем логи
+          sleep 5
+          echo "=== Recent logs ==="
+          docker-compose logs --tail=20 web || true
+          
+          # Очищаем старые образы
+          docker system prune -f || true
+          
+          echo "✅ Deployment complete!"
