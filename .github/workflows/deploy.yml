@@ -127,11 +127,8 @@ jobs:
           echo "REDIS_PORT=6379" >> .env
           echo "TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}" >> .env
           
-          # Останавливаем старые контейнеры
           docker-compose down
           
-          # Собираем и запускаем новые контейнеры
           docker-compose up -d --build
           
-          # Очищаем старые образы
           docker system prune -f
