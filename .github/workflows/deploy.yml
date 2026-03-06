@@ -2,9 +2,10 @@ name: CI/CD Pipeline
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ "main", "develop", "future" ]  # Все ваши ветки
   pull_request:
-    branches: [ main ]
+    branches: [ "main", "develop" ]
+  workflow_dispatch:
 
 jobs:
   test:
