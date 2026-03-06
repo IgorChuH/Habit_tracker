@@ -1,36 +1,62 @@
-version: '3.8'
-
 services:
+  # PostgreSQL база данных
   db:
     image: postgres:15-alpine
+    container_name: habit_db
+    restart: unless-stopped
+    volumes:
+      - postgres_data:/var/lib/postgresql/data/
+    env_file:
+      - .env
     environment:
       - POSTGRES_DB=${POSTGRES_DB}
       - POSTGRES_USER=${POSTGRES_USER}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data/
+    ports:
+      - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - habit_network
 
+  # Redis для Celery
   redis:
     image: redis:7-alpine
+    container_name: habit_redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
     volumes:
       - redis_data:/data
+    ports:
+      - "6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - habit_network
 
+  # Django приложение
   web:
-    build: .
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    container_name: habit_web
+    restart: unless-stopped
     command: >
       sh -c "
+        echo 'Waiting for database...' &&
+        while ! nc -z db 5432; do
+          sleep 1
+        done &&
+        echo 'Database is ready!' &&
         python manage.py migrate --noinput &&
         python manage.py collectstatic --noinput &&
+        echo 'Starting gunicorn server...' &&
         gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 4
       "
     volumes:
@@ -41,40 +67,109 @@ services:
     environment:
       - POSTGRES_HOST=db
       - REDIS_HOST=redis
+      - DEBUG=False
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
-    ports:
-      - "8000:8000"
+    expose:
+      - 8000
+    networks:
+      - habit_network
 
+  # Celery worker
   celery:
-    build: .
-    command: celery -A config worker --loglevel=info --pool=solo
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    container_name: habit_celery
+    restart: unless-stopped
+    command: >
+      sh -c "
+        echo 'Waiting for redis...' &&
+        while ! nc -z redis 6379; do
+          sleep 1
+        done &&
+        echo 'Redis is ready!' &&
+        celery -A config worker --loglevel=info --pool=solo
+      "
+    volumes:
+      - .:/app
     env_file:
       - .env
     environment:
       - POSTGRES_HOST=db
       - REDIS_HOST=redis
+      - DEBUG=False
     depends_on:
       - web
       - redis
+      - db
+    networks:
+      - habit_network
 
+  # Celery beat (периодические задачи)
   celery-beat:
-    build: .
-    command: celery -A config beat --loglevel=info
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    container_name: habit_celery_beat
+    restart: unless-stopped
+    command: >
+      sh -c "
+        echo 'Waiting for redis...' &&
+        while ! nc -z redis 6379; do
+          sleep 1
+        done &&
+        echo 'Redis is ready!' &&
+        celery -A config beat --loglevel=info
+      "
+    volumes:
+      - .:/app
     env_file:
       - .env
     environment:
       - POSTGRES_HOST=db
       - REDIS_HOST=redis
+      - DEBUG=False
     depends_on:
       - web
       - redis
+      - db
+    networks:
+      - habit_network
 
+  # Nginx веб-сервер
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: habit_nginx
+    restart: unless-stopped
+    volumes:
+      - ./docker/nginx/nginx.conf:/etc/nginx/conf.d/default.conf
+      - static_volume:/app/static
+      - media_volume:/app/media
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - web
+    networks:
+      - habit_network
+
+# Тома для хранения данных
 volumes:
   postgres_data:
+    name: habit_postgres_data
   redis_data:
+    name: habit_redis_data
   static_volume:
+    name: habit_static
   media_volume:
+    name: habit_media
+
+# Сеть для контейнеров
+networks:
+  habit_network:
+    name: habit_network
+    driver: bridge
