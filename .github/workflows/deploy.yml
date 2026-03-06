@@ -23,41 +23,57 @@ jobs:
           # Создаем директорию
           mkdir -p ~/habit-tracker
           
-          # Очищаем старую версию (но сохраняем .env)
+          # Сохраняем .env если есть
           if [ -f ~/habit-tracker/.env ]; then
             cp ~/habit-tracker/.env ~/.env.backup
           fi
           
+          # Очищаем директорию (но сохраняем .env позже)
           rm -rf ~/habit-tracker/*
-          
-          if [ -f ~/.env.backup ]; then
-            cp ~/.env.backup ~/habit-tracker/.env
-          fi
           
           echo "Directory ready: ~/habit-tracker"
 
-    - name: Copy files to server (excluding .git)
-      uses: appleboy/scp-action@v0.1.7
+    - name: Copy files with rsync
+      run: |
+        # Создаем файл с SSH ключом
+        echo "${{ secrets.SSH_PRIVATE_KEY }}" > private_key.pem
+        chmod 600 private_key.pem
+        
+        # Копируем файлы через rsync
+        rsync -avz --delete \
+          -e "ssh -o StrictHostKeyChecking=no -i private_key.pem -p ${{ secrets.SSH_PORT || '22' }}" \
+          --exclude='.git' \
+          --exclude='.gitignore' \
+          --exclude='.env' \
+          --exclude='.env.example' \
+          --exclude='__pycache__' \
+          --exclude='*.pyc' \
+          --exclude='venv' \
+          --exclude='.idea' \
+          --exclude='.vscode' \
+          --exclude='*.log' \
+          --exclude='.DS_Store' \
+          ./ ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:~/habit-tracker/
+      shell: bash
+
+    - name: Restore .env file
+      uses: appleboy/ssh-action@v0.1.7
       with:
         host: ${{ secrets.SERVER_HOST }}
         username: ${{ secrets.SERVER_USER }}
         key: ${{ secrets.SSH_PRIVATE_KEY }}
         port: ${{ secrets.SSH_PORT || '22' }}
-        source: "."
-        target: "~/habit-tracker"
-        strip_components: 0
-        overwrite: true
-        exclude: |
-          .git/
-          .gitignore
-          .env
-          __pycache__/
-          *.pyc
-          venv/
-          .idea/
-          .vscode/
-          *.log
-          .DS_Store
+        script: |
+          # Восстанавливаем .env если был бэкап
+          if [ -f ~/.env.backup ]; then
+            cp ~/.env.backup ~/habit-tracker/.env
+            rm ~/.env.backup
+            echo "Restored .env from backup"
+          elif [ ! -f ~/habit-tracker/.env ] && [ -f ~/habit-tracker/.env.example ]; then
+            cp ~/habit-tracker/.env.example ~/habit-tracker/.env
+            echo "Created .env from .env.example"
+            echo "⚠️ Please update .env with actual values: nano ~/habit-tracker/.env"
+          fi
 
     - name: Deploy with Docker Compose
       uses: appleboy/ssh-action@v0.1.7
@@ -69,11 +85,12 @@ jobs:
         script: |
           cd ~/habit-tracker
           
-          # Создаем .env из .env.example если нужно
-          if [ ! -f .env ] && [ -f .env.example ]; then
+          # Проверяем наличие .env
+          if [ ! -f .env ]; then
+            echo "⚠️ .env file not found! Creating from .env.example"
             cp .env.example .env
-            echo "⚠️ Please update .env with actual values on the server"
-            echo "Run: nano ~/habit-tracker/.env"
+            echo "Please update .env manually: nano .env"
+            exit 1
           fi
           
           # Останавливаем старые контейнеры
@@ -83,7 +100,10 @@ jobs:
           docker-compose up -d --build
           
           # Проверяем статус
+          echo "=== Container Status ==="
           docker-compose ps
           
           # Очищаем старые образы
           docker system prune -f || true
+          
+          echo "=== Deployment complete ==="
